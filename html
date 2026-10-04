@@ -1,0 +1,54 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Studio — Black&White</title><link rel="stylesheet" href="/css/main.css"></head><body>
+<header class="topbar"><a class="logo" href="/"><span class="dot"></span>Black&White</a>
+<nav><a href="/upload">Upload</a></nav><div style="flex:1"></div><span id="authArea"></span></header>
+<main class="section"><h1 style="letter-spacing:-1px;margin-bottom:20px">Creator Studio</h1>
+<div class="tabs"><button class="on" data-t="vids">Videos</button><button data-t="ana">Analytics</button>
+<button data-t="earn">Earnings</button><button data-t="pay">Payouts</button></div>
+<div id="vids"><table><thead><tr><th>Title</th><th>Status</th><th>Privacy</th><th>Views</th><th>Likes</th><th></th></tr></thead><tbody id="vrows"></tbody></table></div>
+<div id="ana" style="display:none"><div class="stat-grid" id="anastats"></div></div>
+<div id="earn" style="display:none"><div class="stat-grid" id="estats"></div><h2 style="font-size:17px;margin:14px 0">History</h2>
+<table><thead><tr><th>Date</th><th>Video</th><th>Views</th><th>Revenue</th><th>Your cut</th><th>Status</th></tr></thead><tbody id="erows"></tbody></table></div>
+<div id="pay" style="display:none"><div class="stat-grid"><div class="stat"><div class="v" id="avail">$0</div><div class="k">Available balance</div></div></div>
+<div class="panel" style="margin-bottom:18px"><h3 style="margin-bottom:12px">Payout method</h3>
+<div class="field"><label>Provider</label><select id="pm"><option value="stripe_connect">Stripe Connect</option><option value="paypal">PayPal</option></select></div>
+<div class="field"><label>Account ID / email (no card data — ever)</label><input id="pref"></div>
+<button class="btn btn-ghost btn-sm" id="addpm">Save method</button>
+<button class="btn btn-pri btn-sm" id="req" style="margin-left:10px">Request payout</button></div>
+<h2 style="font-size:17px;margin:14px 0">Payout history</h2>
+<table><thead><tr><th>Date</th><th>Amount</th><th>Fee</th><th>Status</th></tr></thead><tbody id="prows"></tbody></table></div>
+</main>
+<script type="module">
+import { api, esc, cents, toast } from '/js/api.js'; import '/js/authbar.js';
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+  for (const id of ['vids','ana','earn','pay']) document.getElementById(id).style.display = id === b.dataset.t ? '' : 'none'; });
+const { videos } = await api('/studio/videos');
+document.getElementById('vrows').innerHTML = videos.map(v => `<tr><td>${esc(v.title)}</td>
+<td><span class="badge ${v.status === 'ready' ? 'inv' : ''}">${v.status}</span></td><td>${v.privacy}</td>
+<td>${v.views}</td><td>${v.likes}</td><td><a class="btn btn-ghost btn-sm" href="/watch?v=${v.id}">View</a></td></tr>`).join('');
+const a = await api('/studio/analytics');
+document.getElementById('anastats').innerHTML =
+ `<div class="stat"><div class="v">${a.total_views}</div><div class="k">Total views</div></div>
+  <div class="stat"><div class="v">${a.views_30d}</div><div class="k">Views (30d)</div></div>
+  <div class="stat"><div class="v">${Math.round(a.watch_seconds / 3600)}h</div><div class="k">Watch time</div></div>
+  <div class="stat"><div class="v">${a.total_videos}</div><div class="k">Videos</div></div>`;
+const e = await api('/studio/earnings');
+const s = e.summary;
+document.getElementById('estats').innerHTML =
+ `<div class="stat"><div class="v">${cents(s.total_earnings)}</div><div class="k">Total earnings</div></div>
+  <div class="stat"><div class="v">${cents(s.available)}</div><div class="k">Available</div></div>
+  <div class="stat"><div class="v">${cents(s.pending)}</div><div class="k">Pending</div></div>
+  <div class="stat"><div class="v">${s.monetized_views}</div><div class="k">Monetized views</div></div>`;
+document.getElementById('erows').innerHTML = e.history.map(h => `<tr><td>${h.created_at.slice(0,10)}</td>
+<td>${esc(h.title)}</td><td>${h.views}</td><td>${cents(h.revenue_cents)}</td><td>${cents(h.creator_cut_cents)}</td>
+<td><span class="badge">${h.status}</span></td></tr>`).join('');
+document.getElementById('prows').innerHTML = e.payouts.map(p => `<tr><td>${p.requested_at.slice(0,10)}</td>
+<td>${cents(p.amount_cents)}</td><td>${cents(p.fee_cents)}</td><td><span class="badge ${p.status === 'completed' ? 'inv' : ''}">${p.status}</span></td></tr>`).join('');
+document.getElementById('avail').textContent = cents(s.available);
+document.getElementById('addpm').onclick = async () => {
+  await api('/studio/payout-method', { method: 'POST', json: { provider: pm.value, accountRef: pref.value } }); toast('Payout method saved'); };
+document.getElementById('req').onclick = async () => {
+  try { await api('/studio/payouts', { method: 'POST', json: {} }); toast('Payout requested'); location.reload(); }
+  catch (ex) { toast(ex.message === 'below_minimum' ? 'Below minimum payout' : 'Payout failed'); } };
+</script></body></html>
