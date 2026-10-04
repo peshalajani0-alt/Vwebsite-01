@@ -1,0 +1,58 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Settings — Black&White</title><link rel="stylesheet" href="/css/main.css"></head><body>
+<header class="topbar"><a class="logo" href="/"><span class="dot"></span>Black&White</a><div style="flex:1"></div></header>
+<main class="section" style="max-width:720px"><h1 style="letter-spacing:-1px;margin-bottom:20px">Account settings</h1>
+<div class="tabs"><button class="on" data-t="p">Profile</button><button data-t="s">Security</button><button data-t="d">Privacy & Data</button></div>
+<div id="p"><div class="panel"><div class="field"><label>Display name</label><input id="dn"></div>
+<div class="field"><label>Bio</label><textarea id="bio" maxlength="500"></textarea></div>
+<div class="field"><label><input type="checkbox" id="pv"> Public profile</label></div>
+<button class="btn btn-pri btn-sm" id="savep">Save</button></div></div>
+<div id="s" style="display:none">
+<div class="panel" style="margin-bottom:18px"><h3 style="margin-bottom:12px">Change password</h3>
+<div class="field"><label>Current</label><input type="password" id="cur"></div>
+<div class="field"><label>New</label><input type="password" id="npw"></div>
+<button class="btn btn-pri btn-sm" id="cpw">Update</button></div>
+<div class="panel" style="margin-bottom:18px"><h3 style="margin-bottom:12px">Two-factor authentication</h3>
+<div id="tfaBox"></div><div class="field" style="margin-top:10px"><label>Code</label><input id="tcode" maxlength="6" inputmode="numeric"></div>
+<button class="btn btn-ghost btn-sm" id="tbtn">Enable 2FA</button></div>
+<div class="panel"><h3 style="margin-bottom:12px">Active sessions</h3><table><tbody id="srows"></tbody></table>
+<button class="btn btn-danger btn-sm" id="kill" style="margin-top:12px">Log out other devices</button></div></div>
+<div id="d" style="display:none"><div class="panel" style="margin-bottom:18px">
+<h3 style="margin-bottom:12px">Your data</h3><p style="color:var(--mut);font-size:14px;margin-bottom:14px">Download everything we store about you.</p>
+<button class="btn btn-ghost btn-sm" id="exp">Download my data (JSON)</button></div>
+<div class="panel"><h3 style="margin:0 0 12px">Delete account</h3>
+<p style="color:var(--mut);font-size:14px;margin-bottom:14px">Deactivates your account and removes videos. Financial records required for legal/tax purposes are retained in anonymized form.</p>
+<div class="field"><label>Confirm with password</label><input type="password" id="delpw"></div>
+<button class="btn btn-danger btn-sm" id="del">Delete my account</button></div></div></main>
+<script type="module">
+import { api, toast } from '/js/api.js';
+const { profile } = await api('/studio/profile');
+dn.value = profile.display_name || ''; bio.value = profile.bio || ''; pv.checked = profile.profile_visible !== false;
+document.getElementById('savep').onclick = async () => {
+  await api('/studio/profile', { method: 'PATCH', json: { displayName: dn.value, bio: bio.value, profileVisible: pv.checked } }); toast('Saved'); };
+document.getElementById('cpw').onclick = async () => {
+  try { await api('/auth/password', { method: 'POST', json: { current: cur.value, password: npw.value } }); toast('Password updated'); }
+  catch { toast('Wrong current password'); } };
+let mode = 'setup';
+tbtn.onclick = async () => {
+  if (mode === 'setup') {
+    const r = await api('/auth/2fa/setup', { method: 'POST', json: {} });
+    tfaBox.innerHTML = `<img src="${r.qr}" style="width:160px;border-radius:10px"><p style="color:var(--mut);font-size:12px;word-break:break-all">${r.secret}</p>`;
+    mode = 'enable'; tbtn.textContent = 'Confirm & enable'; return; }
+  const r = await api('/auth/2fa/' + (tbtn.textContent.includes('Confirm') ? 'enable' : 'disable'), { method: 'POST', json: { code: tcode.value } }).catch(() => null);
+  if (r?.backupCodes) tfaBox.innerHTML = '<p style="font-size:13px">Backup codes (save these!):<br>' + r.backupCodes.join('<br>') + '</p>';
+  toast(r ? '2FA updated' : 'Invalid code'); };
+const { sessions, current } = await api('/auth/sessions');
+srows.innerHTML = sessions.map(s => `<tr><td>${s.sid === current ? '● This device' : 'Device session'}</td><td>${s.expire.slice(0,10)}</td></tr>`).join('');
+document.getElementById('kill').onclick = async () => { await api('/auth/sessions/revoke-others', { method: 'POST', json: {} }); toast('Other sessions revoked'); };
+document.getElementById('exp').onclick = async () => {
+  const data = await api('/studio/export'); const b = new Blob([JSON.stringify(data, null, 2)]);
+  const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'blackwhite-data.json'; a.click(); };
+document.getElementById('del').onclick = async () => {
+  if (!confirm('Really delete your account? This cannot be undone.')) return;
+  try { await api('/studio/delete-account', { method: 'POST', json: { password: delpw.value } }); location.href = '/'; }
+  catch { toast('Wrong password'); } };
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+  for (const id of ['p','s','d']) document.getElementById(id).style.display = id === b.dataset.t ? '' : 'none'; });
+</script></body></html>
