@@ -1,0 +1,16 @@
+blackwhite/
+├── package.json, .env.example, README.md
+├── database/schema.sql          # 20+ tables, FKs, indexes, constraints, commission_settings singleton
+├── docs/ARCHITECTURE.md, docs/SECURITY.md
+├── backend/
+│   ├── server.js                # helmet + strict CSP, HSTS, sessions, CSRF, static frontend
+│   ├── config/                  # db.js (pg pool + tx), security.js (bcrypt/argon2 swap), storage.js (S3/R3 + magic-byte sniffing + signed URLs)
+│   ├── middleware/              # auth+RBAC, CSRF double-submit, rate limits, zod validation
+│   ├── routes/                  # auth (register/verify/login/2FA/reset/sessions), videos (real upload→S3→queue, privacy, HLS, likes/comments/reports), studio (analytics, earnings, payouts, export, deletion), admin (users/videos/commission/payouts/reports/copyright/audit), misc (notifications, creators, DMCA)
+│   ├── jobs/                    # videoProcessor.js (ffmpeg→HLS ladder+thumbnails), earnings.js (DB-driven commission pipeline)
+│   └── utils/                   # mailer, AES-GCM cryptoBox, ClamAV hook, payment-provider adapter
+└── frontend/
+    ├── index.html, css/main.css, js/api.js, js/authbar.js
+    ├── watch.html               # hls.js player: quality/speed/PiP/CC/fullscreen, signed manifest
+    ├── upload.html              # drag&drop, progress, preview, thumbnail, publish/draft
+    └── pages/                   # login, register, forgot, verify-email, reset-password
