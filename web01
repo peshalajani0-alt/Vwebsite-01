@@ -1,0 +1,195 @@
+blackwhite/
+├── package.json, .env.example, README.md
+├── database/schema.sql          # 20+ tables, FKs, indexes, constraints, commission_settings singleton
+├── docs/ARCHITECTURE.md, docs/SECURITY.md
+├── backend/
+│   ├── server.js                # helmet + strict CSP, HSTS, sessions, CSRF, static frontend
+│   ├── config/                  # db.js (pg pool + tx), security.js (bcrypt/argon2 swap), storage.js (S3/R3 + magic-byte sniffing + signed URLs)
+│   ├── middleware/              # auth+RBAC, CSRF double-submit, rate limits, zod validation
+│   ├── routes/                  # auth (register/verify/login/2FA/reset/sessions), videos (real upload→S3→queue, privacy, HLS, likes/comments/reports), studio (analytics, earnings, payouts, export, deletion), admin (users/videos/commission/payouts/reports/copyright/audit), misc (notifications, creators, DMCA)
+│   ├── jobs/                    # videoProcessor.js (ffmpeg→HLS ladder+thumbnails), earnings.js (DB-driven commission pipeline)
+│   └── utils/                   # mailer, AES-GCM cryptoBox, ClamAV hook, payment-provider adapter
+└── frontend/
+    ├── index.html, css/main.css, js/api.js, js/authbar.js
+    ├── watch.html               # hls.js player: quality/speed/PiP/CC/fullscreen, signed manifest
+    ├── upload.html              # drag&drop, progress, preview, thumbnail, publish/draft
+    └── pages/                   # login, register, forgot, verify-email, reset-password
+
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Studio — Black&White</title><link rel="stylesheet" href="/css/main.css"></head><body>
+<header class="topbar"><a class="logo" href="/"><span class="dot"></span>Black&White</a>
+<nav><a href="/upload">Upload</a></nav><div style="flex:1"></div><span id="authArea"></span></header>
+<main class="section"><h1 style="letter-spacing:-1px;margin-bottom:20px">Creator Studio</h1>
+<div class="tabs"><button class="on" data-t="vids">Videos</button><button data-t="ana">Analytics</button>
+<button data-t="earn">Earnings</button><button data-t="pay">Payouts</button></div>
+<div id="vids"><table><thead><tr><th>Title</th><th>Status</th><th>Privacy</th><th>Views</th><th>Likes</th><th></th></tr></thead><tbody id="vrows"></tbody></table></div>
+<div id="ana" style="display:none"><div class="stat-grid" id="anastats"></div></div>
+<div id="earn" style="display:none"><div class="stat-grid" id="estats"></div><h2 style="font-size:17px;margin:14px 0">History</h2>
+<table><thead><tr><th>Date</th><th>Video</th><th>Views</th><th>Revenue</th><th>Your cut</th><th>Status</th></tr></thead><tbody id="erows"></tbody></table></div>
+<div id="pay" style="display:none"><div class="stat-grid"><div class="stat"><div class="v" id="avail">$0</div><div class="k">Available balance</div></div></div>
+<div class="panel" style="margin-bottom:18px"><h3 style="margin-bottom:12px">Payout method</h3>
+<div class="field"><label>Provider</label><select id="pm"><option value="stripe_connect">Stripe Connect</option><option value="paypal">PayPal</option></select></div>
+<div class="field"><label>Account ID / email (no card data — ever)</label><input id="pref"></div>
+<button class="btn btn-ghost btn-sm" id="addpm">Save method</button>
+<button class="btn btn-pri btn-sm" id="req" style="margin-left:10px">Request payout</button></div>
+<h2 style="font-size:17px;margin:14px 0">Payout history</h2>
+<table><thead><tr><th>Date</th><th>Amount</th><th>Fee</th><th>Status</th></tr></thead><tbody id="prows"></tbody></table></div>
+</main>
+<script type="module">
+import { api, esc, cents, toast } from '/js/api.js'; import '/js/authbar.js';
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+  for (const id of ['vids','ana','earn','pay']) document.getElementById(id).style.display = id === b.dataset.t ? '' : 'none'; });
+const { videos } = await api('/studio/videos');
+document.getElementById('vrows').innerHTML = videos.map(v => `<tr><td>${esc(v.title)}</td>
+<td><span class="badge ${v.status === 'ready' ? 'inv' : ''}">${v.status}</span></td><td>${v.privacy}</td>
+<td>${v.views}</td><td>${v.likes}</td><td><a class="btn btn-ghost btn-sm" href="/watch?v=${v.id}">View</a></td></tr>`).join('');
+const a = await api('/studio/analytics');
+document.getElementById('anastats').innerHTML =
+ `<div class="stat"><div class="v">${a.total_views}</div><div class="k">Total views</div></div>
+  <div class="stat"><div class="v">${a.views_30d}</div><div class="k">Views (30d)</div></div>
+  <div class="stat"><div class="v">${Math.round(a.watch_seconds / 3600)}h</div><div class="k">Watch time</div></div>
+  <div class="stat"><div class="v">${a.total_videos}</div><div class="k">Videos</div></div>`;
+const e = await api('/studio/earnings');
+const s = e.summary;
+document.getElementById('estats').innerHTML =
+ `<div class="stat"><div class="v">${cents(s.total_earnings)}</div><div class="k">Total earnings</div></div>
+  <div class="stat"><div class="v">${cents(s.available)}</div><div class="k">Available</div></div>
+  <div class="stat"><div class="v">${cents(s.pending)}</div><div class="k">Pending</div></div>
+  <div class="stat"><div class="v">${s.monetized_views}</div><div class="k">Monetized views</div></div>`;
+document.getElementById('erows').innerHTML = e.history.map(h => `<tr><td>${h.created_at.slice(0,10)}</td>
+<td>${esc(h.title)}</td><td>${h.views}</td><td>${cents(h.revenue_cents)}</td><td>${cents(h.creator_cut_cents)}</td>
+<td><span class="badge">${h.status}</span></td></tr>`).join('');
+document.getElementById('prows').innerHTML = e.payouts.map(p => `<tr><td>${p.requested_at.slice(0,10)}</td>
+<td>${cents(p.amount_cents)}</td><td>${cents(p.fee_cents)}</td><td><span class="badge ${p.status === 'completed' ? 'inv' : ''}">${p.status}</span></td></tr>`).join('');
+document.getElementById('avail').textContent = cents(s.available);
+document.getElementById('addpm').onclick = async () => {
+  await api('/studio/payout-method', { method: 'POST', json: { provider: pm.value, accountRef: pref.value } }); toast('Payout method saved'); };
+document.getElementById('req').onclick = async () => {
+  try { await api('/studio/payouts', { method: 'POST', json: {} }); toast('Payout requested'); location.reload(); }
+  catch (ex) { toast(ex.message === 'below_minimum' ? 'Below minimum payout' : 'Payout failed'); } };
+</script></body></html>
+
+
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Settings — Black&White</title><link rel="stylesheet" href="/css/main.css"></head><body>
+<header class="topbar"><a class="logo" href="/"><span class="dot"></span>Black&White</a><div style="flex:1"></div></header>
+<main class="section" style="max-width:720px"><h1 style="letter-spacing:-1px;margin-bottom:20px">Account settings</h1>
+<div class="tabs"><button class="on" data-t="p">Profile</button><button data-t="s">Security</button><button data-t="d">Privacy & Data</button></div>
+<div id="p"><div class="panel"><div class="field"><label>Display name</label><input id="dn"></div>
+<div class="field"><label>Bio</label><textarea id="bio" maxlength="500"></textarea></div>
+<div class="field"><label><input type="checkbox" id="pv"> Public profile</label></div>
+<button class="btn btn-pri btn-sm" id="savep">Save</button></div></div>
+<div id="s" style="display:none">
+<div class="panel" style="margin-bottom:18px"><h3 style="margin-bottom:12px">Change password</h3>
+<div class="field"><label>Current</label><input type="password" id="cur"></div>
+<div class="field"><label>New</label><input type="password" id="npw"></div>
+<button class="btn btn-pri btn-sm" id="cpw">Update</button></div>
+<div class="panel" style="margin-bottom:18px"><h3 style="margin-bottom:12px">Two-factor authentication</h3>
+<div id="tfaBox"></div><div class="field" style="margin-top:10px"><label>Code</label><input id="tcode" maxlength="6" inputmode="numeric"></div>
+<button class="btn btn-ghost btn-sm" id="tbtn">Enable 2FA</button></div>
+<div class="panel"><h3 style="margin-bottom:12px">Active sessions</h3><table><tbody id="srows"></tbody></table>
+<button class="btn btn-danger btn-sm" id="kill" style="margin-top:12px">Log out other devices</button></div></div>
+<div id="d" style="display:none"><div class="panel" style="margin-bottom:18px">
+<h3 style="margin-bottom:12px">Your data</h3><p style="color:var(--mut);font-size:14px;margin-bottom:14px">Download everything we store about you.</p>
+<button class="btn btn-ghost btn-sm" id="exp">Download my data (JSON)</button></div>
+<div class="panel"><h3 style="margin:0 0 12px">Delete account</h3>
+<p style="color:var(--mut);font-size:14px;margin-bottom:14px">Deactivates your account and removes videos. Financial records required for legal/tax purposes are retained in anonymized form.</p>
+<div class="field"><label>Confirm with password</label><input type="password" id="delpw"></div>
+<button class="btn btn-danger btn-sm" id="del">Delete my account</button></div></div></main>
+<script type="module">
+import { api, toast } from '/js/api.js';
+const { profile } = await api('/studio/profile');
+dn.value = profile.display_name || ''; bio.value = profile.bio || ''; pv.checked = profile.profile_visible !== false;
+document.getElementById('savep').onclick = async () => {
+  await api('/studio/profile', { method: 'PATCH', json: { displayName: dn.value, bio: bio.value, profileVisible: pv.checked } }); toast('Saved'); };
+document.getElementById('cpw').onclick = async () => {
+  try { await api('/auth/password', { method: 'POST', json: { current: cur.value, password: npw.value } }); toast('Password updated'); }
+  catch { toast('Wrong current password'); } };
+let mode = 'setup';
+tbtn.onclick = async () => {
+  if (mode === 'setup') {
+    const r = await api('/auth/2fa/setup', { method: 'POST', json: {} });
+    tfaBox.innerHTML = `<img src="${r.qr}" style="width:160px;border-radius:10px"><p style="color:var(--mut);font-size:12px;word-break:break-all">${r.secret}</p>`;
+    mode = 'enable'; tbtn.textContent = 'Confirm & enable'; return; }
+  const r = await api('/auth/2fa/' + (tbtn.textContent.includes('Confirm') ? 'enable' : 'disable'), { method: 'POST', json: { code: tcode.value } }).catch(() => null);
+  if (r?.backupCodes) tfaBox.innerHTML = '<p style="font-size:13px">Backup codes (save these!):<br>' + r.backupCodes.join('<br>') + '</p>';
+  toast(r ? '2FA updated' : 'Invalid code'); };
+const { sessions, current } = await api('/auth/sessions');
+srows.innerHTML = sessions.map(s => `<tr><td>${s.sid === current ? '● This device' : 'Device session'}</td><td>${s.expire.slice(0,10)}</td></tr>`).join('');
+document.getElementById('kill').onclick = async () => { await api('/auth/sessions/revoke-others', { method: 'POST', json: {} }); toast('Other sessions revoked'); };
+document.getElementById('exp').onclick = async () => {
+  const data = await api('/studio/export'); const b = new Blob([JSON.stringify(data, null, 2)]);
+  const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'blackwhite-data.json'; a.click(); };
+document.getElementById('del').onclick = async () => {
+  if (!confirm('Really delete your account? This cannot be undone.')) return;
+  try { await api('/studio/delete-account', { method: 'POST', json: { password: delpw.value } }); location.href = '/'; }
+  catch { toast('Wrong password'); } };
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+  for (const id of ['p','s','d']) document.getElementById(id).style.display = id === b.dataset.t ? '' : 'none'; });
+</script></body></html>
+
+
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin — Black&White</title><link rel="stylesheet" href="/css/main.css"></head><body>
+<header class="topbar"><a class="logo" href="/"><span class="dot"></span>Black&White</a><b style="color:var(--mut);font-size:13px">ADMIN</b></header>
+<main class="section"><h1 style="letter-spacing:-1px;margin-bottom:20px">Admin dashboard</h1>
+<div class="tabs"><button class="on" data-t="ov">Overview</button><button data-t="us">Users</button><button data-t="vi">Videos</button>
+<button data-t="co">Commission</button><button data-t="po">Payouts</button><button data-t="re">Reports</button></div>
+<div id="ov"><div class="stat-grid" id="ovs"></div></div>
+<div id="us" style="display:none"><div class="field" style="max-width:340px"><input id="uq" placeholder="Search users…"></div>
+<table><thead><tr><th>Email</th><th>Username</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody id="urs"></tbody></table></div>
+<div id="vi" style="display:none"><table><thead><tr><th>Title</th><th>Creator</th><th>Status</th><th>Actions</th></tr></thead><tbody id="vrs"></tbody></table></div>
+<div id="co" style="display:none"><div class="panel" style="max-width:460px">
+<div class="field"><label>Creator commission % (platform = remainder)</label><input type="number" id="cc" step="0.1"></div>
+<div class="field"><label>Minimum payout (cents)</label><input type="number" id="mp"></div>
+<div class="field"><label>Payment fee (cents)</label><input type="number" id="pf"></div>
+<div class="field"><label>Holding period (days)</label><input type="number" id="hd"></div>
+<div class="field"><label>Revenue per 1000 eligible views (cents)</label><input type="number" id="rpm"></div>
+<button class="btn btn-pri btn-sm" id="csave">Save rules</button></div></div>
+<div id="po" style="display:none"><table><thead><tr><th>Creator</th><th>Amount</th><th>Status</th><th>Actions</th></tr></thead><tbody id="prs"></tbody></table></div>
+<div id="re" style="display:none"><table><thead><tr><th>Type</th><th>Reason</th><th>Target</th><th>Actions</th></tr></thead><tbody id="rrs"></tbody></table></div>
+</main>
+<script type="module">
+import { api, esc, cents, toast } from '/js/api.js';
+const guard = await api('/admin/analytics').catch(() => null);
+if (!guard) { document.querySelector('main').innerHTML = '<p style="color:var(--mut)">Forbidden — admin only.</p>'; throw 0; }
+const s = guard.totals;
+ovs.innerHTML = Object.entries({ Users: s.users, 'Active sessions': s.activeUsers, Videos: s.videos, 'Total views': s.views,
+  'Watch hours': Math.round(s.watchSeconds / 3600), 'Platform revenue': cents(s.platformRevenue), 'Creator payouts': cents(s.creatorPayouts) })
+  .map(([k, v]) => `<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join('');
+async function loadUsers() {
+  const { users } = await api('/admin/users?search=' + encodeURIComponent(uq.value || ''));
+  urs.innerHTML = users.map(u => `<tr><td>${esc(u.email)}</td><td>${esc(u.username)}</td><td>${u.role}</td><td><span class="badge">${u.status}</span></td>
+  <td>${['suspended','banned'].map(st => `<button class="btn btn-danger btn-sm" onclick="act('users/${u.id}/status',{status:'${st}'})">${st}</button>`).join(' ')}
+  <button class="btn btn-ghost btn-sm" onclick="act('users/${u.id}/status',{status:'active'})">restore</button></td></tr>`).join(''); }
+uq.oninput = () => loadUsers(); loadUsers();
+const { videos } = await api('/admin/videos');
+vrs.innerHTML = videos.map(v => `<tr><td>${esc(v.title)}</td><td>${esc(v.username)}</td><td><span class="badge">${v.status}</span></td>
+<td>${['approve','reject','remove','flag'].map(a => `<button class="btn btn-ghost btn-sm" onclick="act('videos/${v.id}/moderate',{action:'${a}'})">${a}</button>`).join(' ')}</td></tr>`).join('');
+const { settings } = await api('/admin/commission');
+cc.value = settings.creator_percent; mp.value = settings.min_payout_cents; pf.value = settings.payment_fee_cents;
+hd.value = settings.holding_days; rpm.value = settings.rpm_cents;
+csave.onclick = async () => { await api('/admin/commission', { method: 'PUT', json: {
+  creatorPercent: +cc.value, minPayoutCents: +mp.value, paymentFeeCents: +pf.value, holdingDays: +hd.value,
+  minWatchSeconds: settings.min_watch_seconds, rpmCents: +rpm.value } }); toast('Commission rules saved'); };
+async function loadPayouts() { const { payouts } = await api('/admin/payouts');
+  prs.innerHTML = payouts.map(p => `<tr><td>${esc(p.username)}</td><td>${cents(p.amount_cents)}</td><td><span class="badge">${p.status}</span></td>
+  <td>${p.status === 'pending' ? `<button class="btn btn-pri btn-sm" onclick="act('payouts/${p.id}/decision',{decision:'approve'})">approve</button>
+  <button class="btn btn-danger btn-sm" onclick="act('payouts/${p.id}/decision',{decision:'reject'})">reject</button>` : ''}</td></tr>`).join(''); }
+loadPayouts();
+const { reports } = await api('/admin/reports');
+rrs.innerHTML = reports.map(rp => `<tr><td>${rp.target_type}</td><td>${rp.reason}</td><td>${esc(rp.target_id)}</td>
+<td><button class="btn btn-ghost btn-sm" onclick="act('reports/${rp.id}/resolve',{resolution:'resolved'})">resolve</button>
+<button class="btn btn-danger btn-sm" onclick="act('reports/${rp.id}/resolve',{resolution:'dismissed'})">dismiss</button></td></tr>`).join('');
+window.act = async (path, json) => { await api('/admin/' + path, { method: 'POST', json }); toast('Done'); location.reload(); };
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+  for (const id of ['ov','us','vi','co','po','re']) document.getElementById(id).style.display = id === b.dataset.t ? '' : 'none'; });
+</script></body></html>
+
+cd blackwhite && cp .env.example .env   # fill in DB, SMTP, S3/R2 credentials
+npm install && npm run db:init
+npm run dev & npm run worker:video & npm run worker:earnings &
+
